@@ -1,0 +1,892 @@
+---
+title: |
+  <center> STAT232 Final Project </center>
+  <center> Analysis of Austin, Texas Airbnb </center>
+author: "Yincheng Zhao"
+output:
+  html_document:
+    df_print: paged
+always_allow_html: yes
+---
+
+
+# Project Description
+
+In this project, we will perform a descriptive and exploratory analysis of the Airbnb data of Austin Texas. In order to understand how the phenomena of each variable behave individually and transversely, in addition to to create prediction model for future price prediction, the whole analysis will follow a simple and direct structure, well detailed in all topics, at the same time, create an intuitive and simple guide to understand the data involved. Further, We did the comparison of number of Airbnb, to their respective prices, count and density according to different location in the city of Austin and used different EDA visualization tools to better visualize the relation between different variables. Similarly we are also using the help of Austin map to plot the area of significance according to different criteria for instance, price difference according to neibouhood, number of total private rooms, price per person, highest ratings etc. 
+
+```{r, echo=FALSE}
+# install.packages("formatR")
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff = 60),tidy=TRUE)
+```
+
+# Part I: Preparation
+
+## 1. Install & Load All Libraries
+
+``````{r, collapse=FALSE}
+# install.packages(c("maps", "mapproj", "leaflet", "caTools", "magick", "ggrepel", "ggmap", "factoextra", "randomForest", "glmnet", "webshot"))
+```
+
+```{r, collapse=FALSE, message=FALSE}
+library(tidyverse)
+library(maps)
+library(mapproj) 
+library(maptools)
+library(ggmap)
+library(mapview)
+library(leaflet)
+library(dplyr)
+library(corrplot)
+library(gridExtra)
+library(ggrepel)
+library(magick)
+library(caTools)
+library(randomForest)
+library(glmnet)
+library(factoextra)
+library(webshot)
+library(htmlwidgets)
+webshot::install_phantomjs()
+```
+
+## 2. Load Data
+
+```{r}
+googleid <- "1jDofhd3DH0qW8sHFfteEnF0MorS8-UjF"
+googleurl <- sprintf("https://docs.google.com/uc?id=%s&export=download", googleid)
+austin <- readr::read_csv(googleurl)
+```
+
+# Part II: Data Cleaning
+
+Make all column names lowercase (easier for typing!)
+
+```{r, collapse=TRUE}
+colnames(austin) <- tolower(colnames(austin))
+```
+
+## 1. Check columns
+
+```{r, collapse=TRUE}
+glimpse(austin)
+```
+
+*There are NA, so first, let's select columns we are interested in and "useful", then remove empty columns and rows (so we don't lose all data). Then let's see what we can do with NA values. At last, we remove rows with NA values that we can't deal with.*
+
+## 2. Select columns we are interested in and remove empty columns & rows.
+
+```{r, collapse=TRUE}
+austin <- austin %>% dplyr::select(id, host_response_time:host_neighbourhood, host_total_listings_count:host_identity_verified, neighbourhood_cleansed, latitude, longitude, room_type, accommodates, bathrooms_text:maximum_nights, number_of_reviews, review_scores_rating:review_scores_value, instant_bookable, reviews_per_month)
+
+# remove empty columns
+empty_columns <- colSums(is.na(austin) | austin == "") == nrow(austin)
+austin <- austin[, !empty_columns]
+empty_columns <- colSums(is.na(austin) | austin == "") == nrow(austin)
+
+#remove empty rows
+austin <- austin[rowSums(is.na(austin)) != ncol(austin),]
+```
+
+## 3. Dive into rows with miss values, specifically numeric rows.
+
+```{r, collapse=TRUE}
+miss_data <- austin %>% summarise_all(~(sum(is.na(.))/n()))
+miss_data <- gather(miss_data, key = "variables", value = "percentage_of_missing")
+
+ggplot(miss_data, aes(x = reorder(variables, percentage_of_missing), y = percentage_of_missing)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  ggtitle("Percentage of Missing Data") +
+  xlab("Column Name") +
+  ylab("Percentage of Missing")
+```
+
+*Columns about reviews appear to have same scale of missing values. Let's remove those NA directly in next step.*
+
+*Beds missing - fill with number of bedroom*
+
+*Bedroom miss - fill with number of beds.*
+
+*Others we just drop all NA.*
+
+```{r, collapse=TRUE}
+# review_scores_rating is mean of all other rating, so just drop rows with NA in review_scores_rating
+austin <- austin[!is.na(austin$review_scores_rating), ]
+
+# fill values for bed & bedrooms missing
+austin$beds <- ifelse(is.na(austin$beds), austin$bedrooms, austin$beds)
+austin$bedrooms <- ifelse(is.na(austin$bedrooms), austin$beds, austin$bedrooms)
+```
+
+## 4. Remove rows with NA and duplicated rows
+
+```{r, collapse=TRUE}
+# remove rows with NA
+austin <- drop_na(austin)
+
+# remove duplicated rows
+austin <- austin[!duplicated(austin), ]
+```
+
+## 5. Convert column to right type
+
+```{r, collapse=TRUE}
+# price to integer
+austin$price <- gsub("\\$", "", austin$price)
+austin$price <- gsub(",", "", austin$price)
+austin$price <- as.numeric(austin$price)
+```
+
+```{r, collapse=TRUE}
+# convert neighbourhood_cleansed(zipcode234) to character
+austin$neighbourhood_cleansed <- as.factor(austin$neighbourhood_cleansed)
+```
+
+## 6. Work on categorical columns (that we are interested in!!)
+
+```{r, collapse=TRUE, warning=FALSE}
+# get the count of host_verification and amentities
+host_cate <- gsub("\\[|\\]", "", austin$host_verifications)
+host_cate_split <- str_split(host_cate, ",")
+
+output <- NULL
+for (i in 1:length(host_cate_split)) {
+  output[i] <- length(host_cate_split[[i]])
+}
+
+amenities_cate <- gsub("\\[|\\]", "", austin$amenities) 
+amenities_cate <- gsub('"', "", amenities_cate)
+amenities_cate_split <- str_split(amenities_cate, ",")
+
+output1 <- NULL
+for (i in 1:length(amenities_cate_split)) {
+  output1[i] <- length(amenities_cate_split[[i]])
+}
+
+count_host_verfitication <- as.data.frame(output)
+colnames(count_host_verfitication) <- c("count_host_verfitication")
+count_amenities_verfitication <- as.data.frame(output1)
+colnames(count_amenities_verfitication) <- c("count_amenities_verfitication")
+
+# convert host_response_rate to numeric
+host_response_rate1 <- as.numeric(gsub("[\\%,]", "", austin$host_response_rate))
+host_response_rate1 <- as.data.frame(host_response_rate1/100)
+colnames(host_response_rate1) <- c("host_response_rate1")
+
+# convert host_acceptance_rate to numeric
+host_acceptance_rate1 <- as.numeric(gsub("[\\%,]", "", austin$host_acceptance_rate))
+host_acceptance_rate1 <- as.data.frame(host_acceptance_rate1/100)
+colnames(host_acceptance_rate1) <- c("host_acceptance_rate1")
+
+# get count of bathrooms from bathrooms_text (here we don't consider shared or private)
+count_bathrooms <- as.data.frame(as.numeric(gsub("([0-9]+).*$", "\\1", austin$bathrooms_text)))
+colnames(count_bathrooms) <- c("count_bathrooms")
+
+# combine the new columns to austin dataset
+austin <- cbind(austin, count_host_verfitication, count_amenities_verfitication, host_response_rate1, host_acceptance_rate1, count_bathrooms)
+```
+
+
+```{r, collapse=TRUE}
+#select useful columns for further analysis
+austin <- dplyr::select(austin, -c("host_response_rate", "host_acceptance_rate", "host_verifications", "bathrooms_text", "amenities"))
+head(austin)
+```
+
+*There are NA in host_response_time, but it fine, we will take it as a category for further analysis.*
+
+*Now we have cleaned, full dataset, we can move to further analysis.*
+
+
+# Part III: Exploratory Data Analysis & Visualization
+
+## 1. Summary of data
+
+```{r, collapse=TRUE}
+summary(austin)
+```
+
+## 2. Descrptive Analysis
+
+### (1). Count of listing in each neighborhood
+
+```{r, collapse=TRUE}
+neighbourhood <- austin %>% 
+  group_by(host_neighbourhood) %>% 
+  summarise(count = n(), long = mean(longitude, na.rm = TRUE), lat = mean(latitude, na.rm = TRUE))
+neighbourhood <- arrange(neighbourhood, desc(count))
+head(neighbourhood)
+```
+```{r, collapse=TRUE}
+ggplot(head(neighbourhood, 50), mapping = aes(y = reorder(host_neighbourhood, count), x = count)) + 
+  geom_bar(stat = "identity", fill = rgb(0.1,0.4,0.5,0.7)) +
+  ylab("Neighbourhood") +
+  theme(axis.text=element_text(size=7))+
+  ggtitle("Top 50: Count of Listing in Neighbourhood")
+```
+
+*The abvoe bar plot has the listing count of top 50 neighborhood having airbnbs in the city of Austin. From the above barplot it can be figured out that East downtown has the highest number of listing with the count of 551 folllowed by Ziker, downtown, St Edwards and South Lamar which has the listing count of 223, 218 and 197 respectively. There are other neighborhoods whose count and rankings can be obseved from the above barplot easily.*
+
+### (2). Count of listing in each zip area
+
+```{r, collapse=TRUE}
+zip_area <- austin %>% 
+  group_by(neighbourhood_cleansed) %>% 
+  summarise(count = n())
+
+ggplot(zip_area, mapping = aes(y = reorder(neighbourhood_cleansed, count), x = count)) + 
+  geom_bar(stat = "identity", fill = rgb(0.1,0.4,0.5,0.7)) +
+  ylab("Zip Area") +
+  theme(axis.text=element_text(size=8)) +
+  ggtitle("Count of Listing in Each Zip Area")
+```
+
+*From the above barplot it can be figured out that Zip area having code of 78704 has the highest number of listing with the count of 1361 folllowed by Zip area 78702, 78741, 78701 and 78703 respectievly. There are other neighborhoods whose count and rankings can be observed from the above barplot easily. It can be infered that the zip code 78704 is a downtown where there is highest amount density of airbnbs*
+
+
+
+```{r}
+# get zip map
+image_url <- "https://habitathunters.com/wp-content/uploads/2020/02/austin-zip-code-map.jpg"
+pic <- image_read(image_url)
+print(pic)
+```
+
+*The result follows what we obtained from neighbourhood. From imported zip map of Austin, we can tell that.*
+
+### (3). Count of Room Type
+
+```{r, collapse=TRUE}
+roommtype <- austin %>% 
+  group_by(room_type) %>% 
+  summarise(count = n())
+
+ggplot(roommtype, aes(x = room_type, y = count)) +
+  geom_bar(stat = "identity", fill = rgb(0.1,0.4,0.5,0.7), width = 0.8) +
+  geom_text(mapping = aes(label = count)) +
+  ggtitle("Count of Room Types")
+```
+
+*From the above barplot it can be seen that Entire home/apt room type has the highest numbers of listing which is 5846. second comes private room which has the count of 1117 followed by shared room with 84 and hotel room with 2 listing counts. The popularity of Entire home can be refered to the fact that many people who come to visit austin in groups tend to go for Entire home/apt in comparison to any other types of room type.*
+
+### (4). Host Response Time
+
+```{r, collapse=TRUE}
+res_time <- austin %>% 
+  group_by(host_response_time) %>% 
+  summarise(count = n())
+
+ggplot(res_time, aes(x = host_response_time, y = count)) +
+  geom_bar(stat = "identity", fill = rgb(0.1,0.4,0.5,0.7), width = 0.8) +
+  geom_text(mapping = aes(label = count)) +
+  ggtitle("Count of Host Response Time")
+```
+
+*It can be observed that most host respond customers within the hour, which is 3883 in numbers. almost 2151 host never responded. 621 responded within a few hours, 335 within a day and 59 a few days and more.*
+
+*Most hosts response customers within an hour.*
+
+### (5). Price Distribution
+
+```{r, collapse=TRUE}
+p1 <- ggplot(data = austin, mapping = aes(x = price)) +
+  geom_histogram(mapping = aes(y=..density..), colour = "black", fill = rgb(0.1,0.4,0.5,0.7), bins = 70) +
+  geom_density(alpha = 0.2, fill="grey") +
+  ggtitle("Distribution of Price") +
+  theme(plot.title = element_text(size=10))
+
+p2 <- ggplot(data = austin[austin$price <= 1000,], mapping = aes(x = price)) +
+  geom_histogram(mapping = aes(y=..density..), colour = "black", fill = rgb(0.1,0.4,0.5,0.7), bins = 70) +
+  geom_density(alpha = 0.2, fill="grey") +
+  ggtitle("Distribution of Price | Price <= $1000") +
+  theme(plot.title = element_text(size=10))
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+*The distribution of price is heavily skewed to the right, even taking closer look to smaller price range(less than $1000). The highest concentration of price falls between o and $250. For a better price prediction later, we may apply data transformation.*
+
+## 3. Exploratory Analysis
+
+### (1). Price Distribution for Each room Type
+
+#### Count of Listing for Each room Type
+
+```{r, collapse=TRUE, fig.align='center'}
+price_group <- austin %>%  mutate(price_group=ifelse(price < quantile(austin$price)[1], "Very Low",
+                                           ifelse(price < quantile(austin$price)[2], "Low",
+                                                  ifelse(price < quantile(austin$price)[3], "Moderate",
+                                                         ifelse(price < quantile(austin$price)[4], "High", "Very High")))))
+
+ggplot(price_group, aes(room_type)) + 
+  geom_bar(aes(fill = price_group), width = 0.8) + 
+  ggtitle("Count of Listings by Room Type") +
+  scale_fill_brewer(palette = "Set2")
+```
+
+*From the above figure it can be observed that the price for entire home/apt varies widely. If we are considering price, we suggest to browse private room or shared room. Renting an entire home have many options for different price ranges*
+
+#### Average Price Per Room Type
+
+```{r, collapse=TRUE, fig.align='center'}
+mean_room_type <- austin %>% group_by(room_type) %>% summarise(average_price = mean(price, na.rm = TRUE))
+mean_room_type$Percent <- prop.table(mean_room_type$average_price) * 100
+mean_room_type 
+
+ggplot(data = mean_room_type, aes(x=room_type, y=average_price)) +
+         coord_flip() +
+         geom_segment(aes(xend=room_type, yend=0, color = room_type), size = 2) +
+         geom_point(size = 5, mapping=aes(color=room_type)) +
+         ggtitle("Average price per room type")
+```
+
+*In the graph above Geom point and geom segment has been used to show the the average price of different room types. Here it can be observed that average price of Entire home apartment is approximately $308 which is the highest followed by hotel room($197), private room($113) and shared room($35) respectively. The types of room is also represented by different colours.*
+
+
+#### Price Distribution | Price <= $1000
+
+```{r, collapse=TRUE, fig.align='center', warning=FALSE}
+ggplot(data = austin[austin$price <= 1000, ], mapping = aes(x = price, fill = room_type)) +
+         geom_density(mapping = aes(fill = room_type), 
+                      size = 1, color = "black", alpha = .6, size = 0.5) +
+         ggtitle("Price Density for Room Types | Price <= $1000") +
+         theme(legend.position="bottom", legend.text = element_text(colour="black", size = 10, 
+                                     face = "bold"))
+```
+
+*In the above density curve plot it can be observed that for the most of the shared room prices are cheap and and their prices are similar similar with the case with private room but they have a little more price options. Likewise, We can have a lots of price options for Entire home/apt till $500 . Similarly, most of the hotel rooms have the price range of $125 to $250.* 
+
+### (2). Avgerage Price for Most Expensive & Cheap 10 Neighbourhood
+
+```{r, collapse=TRUE}
+neighbourhood_price <- austin %>% 
+  group_by(host_neighbourhood) %>% 
+  summarise(average_price = mean(price, na.rm = TRUE))
+neighbourhood_price <- arrange(neighbourhood_price, desc(average_price))
+
+top10 <- head(neighbourhood_price, 10)
+tail10 <- tail(neighbourhood_price, 10)
+
+p1 <- ggplot(top10, aes(y = reorder(host_neighbourhood, average_price), x = average_price)) + 
+  geom_bar(stat = "identity", fill = rgb(0.1,0.4,0.5,0.7)) +
+  ylab("Neighbourhood") +
+  theme(axis.text=element_text(size=8)) +
+  ggtitle("The 10 Most Expensive Neighbourhoods")
+
+p2 <- ggplot(tail10, aes(y = reorder(host_neighbourhood, average_price), x = average_price)) + 
+  geom_bar(stat = "identity", fill = rgb(0.1,0.4,0.5,0.7)) +
+  ylab("Neighbourhood") +
+  theme(axis.text=element_text(size=8)) +
+  ggtitle("The 10 Least Expensive Neighbourhoods")
+grid.arrange(p1, p2, nrow = 2)
+```
+
+*In the first plot we can observe the top 10 most expensive neighbourhoods in Austin. Here we can observe that Meeks bay has the highest average Airbnb price, which is $3850, Manana west which ranks 2nd gives close competition to Meeks bay which has the price of $3729. Beverly hills, Santa Cruz, North End and others join the list respectievely.*
+
+*In the second plot we can observe the top 10 lest expensive neighbourhoods in Austin. Here we can observe that Canyon creek West has the lowest average Airbnb price, which is $38,all other lowest ranking neighbourhood has average prices which are close to each other and some of them like Vaught ranch, Sol and Carson Creek alongside Avery Ranch and Anderson Arbor has the exact same avergae price.*
+
+
+
+### (3). Price Overall Rating | Price <= $1000
+
+```{r, collapse=TRUE}
+# scatter plot
+p1 <- ggplot(austin[austin$price <= 1000, ], aes(x = review_scores_rating, y = price)) +
+  geom_point(color = rgb(0.1,0.4,0.5,0.7)) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
+  ggtitle("Price Versus Overall Rating") +
+  theme(plot.title = element_text(size=8))
+
+rating_range <- austin %>% 
+  mutate(rating_range = ifelse(review_scores_rating<=mean(austin$review_scores_rating, na.rm = TRUE), 
+                               "Rating Below Mean", "Rating Above Mean"))
+p2 <- ggplot(data = rating_range[rating_range$price <= 1000, ], 
+             mapping = aes(x = price, fill = rating_range)) +
+         geom_density(mapping = aes(fill = rating_range), 
+                      color = "black", alpha = .4, size = 0.5) +
+         ggtitle("Price Density for Each Rating Group |
+                 Price <= $1000") +
+         theme(legend.position="right", legend.text = element_text(colour="black", size = 6), 
+               plot.title = element_text(size=8))
+grid.arrange(p1, p2, nrow = 1)
+```
+
+*In the first plot it can be observed that despite the price range the rating and reviews of most of the airbnb in austin is on the highest side i.e most of the ratings are greater than 4. However if we look closely we can observe that higher concentration of the airbnb with high scores falls on the lower price range because the count(density) of airbnbs are highest on the lower price range which can be observed from the 2nd price density plot. It can also be observed that there are many low scoring airbnbs but most of them fall under the price range of $500 which can be verified by the second plot.*
+
+In the second plot it can be observed that 
+
+### (4). Rating over Room Types
+
+```{r, collapse=TRUE}
+ggplot(austin, aes(x= reorder(room_type, review_scores_rating, FUN = median), y= review_scores_rating, fill = room_type)) + 
+  geom_boxplot()+ 
+  ggtitle("Rating over Room Types")+
+  xlab("Room Type")+
+  ylab("Overall Rating")
+```
+
+*The above box plot shows the overall rating of different room types of Airbnb. It can be observed that private room has overall average rating however, the shared room has the largest number of high ratings followed by hotel rooms. Private room has the highest overall rating followed by entire home/apt, shared room and hotel room respectively. However lots of outliers can be seen in the case of private and Entire home/apt, which is the sign that there is inconsistency in the quality in some of the private room and entire home/apt type.*
+
+### (5). Price Factors Investigation
+
+```{r, collapse=TRUE}
+# select factors that may be influential
+price_fac <- austin %>% dplyr::select_if(is.numeric)
+price_fac <- na.omit(price_fac)
+price_cor <- cor(price_fac)
+corrplot(price_cor, tl.col = "black", tl.cex = 0.5)
+```
+
+*From correlation map, it's hard to investigate the factors that influence price. We will analyze price factors at prediction part.*
+
+## 4. Map Visualization
+
+### (1). Overall price on map
+
+```{r, collapse=TRUE, message=FALSE}
+# get austin map
+austin_map <- get_stamenmap(bbox = c(left = -98.5, bottom = 30, 
+                                      right = -97.5, top = 30.6), 
+                                      zoom = 10, maptype = "toner")
+```
+
+```{r, collapse=TRUE}
+# overall price on map
+ggmap(austin_map) +
+  geom_point(data = austin, mapping = aes(x = longitude, y = latitude, color = price), 
+             alpha = 0.1, size = 0.9) +
+  scale_colour_gradient(low = "#6A00FF", high = "#FF0000")
+```
+
+*As stated previously, price for most of listings are below $2500.*
+
+*In the map above of the city of Austin, Texas it can be observed that there is the high concentration of room listing which are purple in colour and according to the legend the color purple represents the price of $2500 and below, which can be observed from the above map and plot. It can also be inferred that the area might be the downtown or area where the population density is very high in comparison to the outskirts of Austin.*
+
+### (2). Physical location for top 10 neighborhood
+
+```{r, collapse=TRUE}
+# get top 10 neighbourhood
+top20 <- head(neighbourhood, 10)
+
+ggmap(austin_map) +
+  geom_point(data = top20, mapping = aes(x = long, y = lat, size = count), 
+             alpha = 0.9, color = "purple")
+```
+
+*In the map above of the city of Austin, Texas it can be observed that there is the high concentration of airbnb hotels represented by the biggest purple circle. It can be infered that it might be the area where there is a lots of population concentration followed by large numbers of airbnbs. Similarly nearby outskirts areas have the lesser number of Airbnbs which can be infered from the descending size of the purple circles.*
+
+*Neighborhoods near downtown Austin tend to have to more listings.*
+
+### (3). Price Glimpse for Each Zip Area
+
+```{r, collapse=TRUE, warning=FALSE}
+# check average price for each zip area
+austin_zip <- austin
+
+austin_zip <- austin_zip %>%
+  group_by(neighbourhood_cleansed) %>% 
+  summarise(latitude = first(latitude),longitude = first(longitude), avg_price = mean(price)) %>%
+  ungroup() 
+
+ggmap(austin_map) +
+  geom_point(data = austin_zip, mapping = aes(x = longitude, y = latitude, size = avg_price), 
+             alpha = 0.9, color = "purple") +
+  geom_label_repel(data = austin_zip, aes(x = longitude, y = latitude, label = neighbourhood_cleansed), 
+                   size = 2)
+```
+
+
+*Average price according to different neighborhood is shown in the map, which is labelled by their respective zipcode in the top of the purple circle. biggest purple circle has the the average price of more than $600 which can be seen everywhere in austin which make it prevalent that most of the airbnbs have the average price of $600 or more*
+
+
+```{r, collapse=TRUE}
+# Check price groups based on price quantiles
+ggmap(austin_map) +
+  geom_point(data = price_group, mapping = aes(x = longitude, y = latitude, color = price_group), 
+             alpha = 0.7, size = 0.8) +
+  scale_color_brewer(palette = "Set3")
+```
+
+*In the above map it can be observed that Airbnbs with different price groups are evenly distributed throughout the city, however it is evident that orange dot which represents the very high price range category is more observable and diffused from the bird eye view as it ranges from south from onion creek to max concentration on northwest  hudson bend and few of them even at dripping springs in the west and obviously much more in the downtown area. The center of the city has all four price category coexisting on similar number.*
+
+### (4). Average price per accommodates
+
+```{r, collapse=TRUE}
+# check average price per person
+avg_price <- austin %>% mutate(avg_price = price/accommodates) %>%
+  mutate(price_range_per_person = ifelse(avg_price < 50, "Price Below $100",
+                              ifelse(avg_price < 200, "Price Below $200",
+                                     ifelse(avg_price < 500, "Price Below $500", "Price Extremely High"))))
+
+ggmap(austin_map) +
+  geom_point(data = avg_price, mapping = aes(x = longitude, y = latitude, color = price_range_per_person), 
+             alpha = 0.7, size = 0.8) +
+    scale_color_brewer(palette = "Set1")
+```
+
+*Most of price range per person are below $100 which is represented in the red dot which is high is number all around the map. Secondly there are price range per person below $200 that are represented in the blue dot. The price range per person that are green and brown dots are very low in numbers*
+
+### (5). Overall rating on map
+
+```{r, collapse=TRUE}
+# overall rating on map
+rating <- austin %>% mutate(rating = ifelse(review_scores_rating < mean(review_scores_rating), "Rating Below Avgerage 4.8", "Rating Above Avgerage 4.8"))
+
+ggmap(austin_map) +
+  geom_point(data = rating, mapping = aes(x = longitude, y = latitude, color = rating), 
+             alpha = 0.7, size = 0.8) +
+    scale_color_brewer(palette = "Set2")
+```
+
+*Here in the above map we can see that most of the rating for the hostels shows green which indicates rating more than 4.8 and others are represents the  rating reviews less than 4.8*
+
+### (6). Room type on map
+
+```{r, collapse=TRUE}
+# check room type
+ggmap(austin_map) +
+  geom_point(data = austin, mapping = aes(x = longitude, y = latitude, color = factor(room_type)), 
+             alpha = 0.8, size = 0.9) +
+  scale_color_brewer(type = "qual", palette = "Set2", name = "Room Type")
+```
+
+*In the map above it can be observed that most of the room types consists of Entire home/apt which is represented by the green dot, followed by private room which is shown by grey colour, we can see very less of hotel room and shared room in the map.*
+
+
+```{r, collapse=TRUE}
+# let's check room_type on a zoomable map since from above map the entire home/apt covered other types of room
+center_lon = median(austin$longitude,na.rm = TRUE)
+center_lat = median(austin$latitude,na.rm = TRUE)
+
+factpal <- colorFactor(c("aquamarine4","coral2","slateblue1","hotpink2"), 
+                       austin$room_type)
+
+m <- leaflet(austin) %>% addProviderTiles("Esri.WorldGrayCanvas") %>%
+  addCircles(lng = ~longitude, lat = ~latitude, color = ~factpal(room_type)) %>%
+  setView(lng=center_lon, lat=center_lat,zoom = 15) %>%
+  addLegend("bottomright", pal = factpal, values = ~room_type,
+            title = "Room Types", opacity = 1)
+
+saveWidget(m, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = "leaflet_map.png",
+        cliprect = "viewport")
+```
+
+*pdf is not able to show zoomed map, please check temp.html or in R if you are interested.*
+
+# Part VI: Supervised/Unsupervised Learning
+
+## 1. Check on price distribution
+
+```{r, collapse=TRUE}
+#plot of price
+ggplot(austin, aes(x= 1, y = price, col = room_type)) +
+  geom_jitter(alpha = 0.5) +
+  geom_hline(yintercept = mean(austin$price)) +
+  geom_segment(aes(x = 1, y = 5000, xend = 1.2, yend = mean(price) + 100, 
+                   colour = "segement"), data = austin, 
+               arrow = arrow(length = unit(0.03, 'npc')), size = 0.5) + 
+  annotate("text", x = 1, y = 5800, label = "Mean Price = $273.66, 
+           \n Varince Price = $286400.9", 
+           col = "darkblue")
+
+#however, most price points are below $2500, check variance and plot
+var(austin$price)
+```
+*Transform price to log_price to improve skewness.*
+
+```{r, collapse=TRUE}
+austin <- austin %>% mutate(price_log = log(price))
+
+p1 <- ggplot(austin, aes(x = price)) + geom_histogram(bins = 30) + ggtitle("Pice")
+p2 <- ggplot(austin, aes(x = price_log)) + geom_histogram(bins = 30) + ggtitle("Pice with Log Transformed")
+grid.arrange(p1, p2, nrow = 1)
+```
+
+## 2. Applied different model for price prediction
+
+*Train-Test data is split with 50/50 ratio*
+
+### (1). Step-wise
+
+```{r, collapse=TRUE}
+#get subset data from linear model
+austin_reg <- austin %>% dplyr::select(-c("id","latitude","longitude", "host_neighbourhood", "price"))
+
+austin_reg <- na.omit(austin_reg)
+```
+
+```{r, collapse=TRUE}
+# randomly split data in r
+set.seed(555)
+sample_size = floor(0.5*nrow(austin_reg))
+
+picked = sample(seq_len(nrow(austin_reg)), size = sample_size)
+train = austin_reg[picked,]
+test = austin_reg[-picked,]
+
+#options(max.print=999999)
+
+reg <- as.formula(price_log ~.)
+austin_linreg <- lm(reg, data = train)
+summary(austin_linreg)
+```
+
+```{r, results="hide"}
+# try stepwise model (both direction)
+austin_stepwise <- step(austin_linreg, direction = 'both')
+```
+
+*We have our linear model with lowest AIC = -3247.51, as price_log ~ host_total_listings_count + neighbourhood_cleansed + room_type + accommodates + bedrooms + beds + minimum_nights + number_of_reviews + review_scores_rating + review_scores_accuracy + review_scores_cleanliness + review_scores_value + reviews_per_month + count_host_verfitication + count_amenities_verfitication + host_acceptance_rate1 + count_bathrooms*
+
+```{r}   
+summary(austin_stepwise)
+```
+
+```{r, collapse=TRUE, warning=FALSE}
+#check fit of step-wise linear regression
+par(mfrow = c(2,2))
+plot(austin_stepwise)
+```
+
+*Resides vs Fitted: ideal, linear assumptions hold;*
+
+*Normal QQ: tails skewed but okay;*
+
+*Scale-Location: residuals are not equally spread though;*
+
+*Residuals vs Leverage: some points are outside cook's distance.*
+
+*In general the model works well, according to R^2 the model explains 67.42% of the fitted data.*
+
+```{r, collapse=TRUE}
+# prediction & MSE
+austin_stepwise_pred <- predict(austin_stepwise, test)
+austin_stepwise_MSE <- mean((test$price_log - austin_stepwise_pred)^2)
+austin_stepwise_MSE
+```
+
+### (2). Random Forest
+
+```{r, collapse=TRUE}
+# select best mtry
+mtry <- tuneRF(train[-1],train$price_log, ntreeTry=500,
+               stepFactor=1.5, improve=0.01, trace=TRUE, plot=TRUE)
+best.m <- mtry[mtry[, 2] == min(mtry[, 2]), 1]
+print(mtry)
+print(best.m)
+```
+
+
+```{r, collapse=TRUE}
+austin_rf <- randomForest(price_log ~., data = train, mtry = best.m, importance = TRUE)
+austin_rf
+varImpPlot(austin_rf)
+```
+
+```{r, collapse=TRUE}
+#prediction & MSE
+austin_rf_pred <- predict(austin_rf, test)
+austin_rf_MSE <- mean((test$price_log - austin_rf_pred)^2)
+austin_rf_MSE
+
+calculateR2 <- function(y, yhat) {
+  tss <- sum((y-mean(y))^2)
+  rss <- sum((y-yhat)^2)
+  r2 <- 1-rss/tss
+  return(r2)
+}
+
+austin_rf_r2 <- calculateR2(test$price_log, austin_rf_pred)
+austin_rf_r2
+```
+
+*R^2 = 0.7045, in general the model works well, the model explains 70.45% of the fitted data.*
+
+### (3). Classification
+
+```{r, collapse=TRUE}
+# pick continuous column only
+
+# str(train)
+# column 2~5, 8 ~ 28
+
+set.seed(555)
+#determine k
+fviz_nbclust(train[,2:5, 8:28], kmeans, method = "wss")
+```
+
+*Start with k = 2, there is no big change, but there is a great decreasing ar k = 9, so let's plot the cluster plot to determine k = 2 or k = 9.*
+
+```{r, collapse=TRUE}
+austin_km2 <- kmeans(train[,2:5, 8:28], centers = 2)
+austin_km9 <- kmeans(train[,2:5, 8:28], centers = 9)
+
+p1 <- fviz_cluster(austin_km2, data = train[,2:5, 8:28], pointsize = 0.1, labelsize = 0)
+p2 <- fviz_cluster(austin_km9, data = train[,2:5, 8:28], pointsize = 0.1, labelsize = 0)
+grid.arrange(p1, p2, nrow = 1)
+```
+
+*So we break train data into two cluster.*
+
+```{r, collapse=TRUE}
+# access the cluster vector
+o <- order(austin_km2$cluster)
+clusters_df <- data.frame(row_id = as.numeric(rownames(train))[o], cluster_id = austin_km2$cluster[o])
+clusters_df1 <- clusters_df[clusters_df$cluster_id == 1,]
+clusters_df2 <- clusters_df[clusters_df$cluster_id == 2,]
+```
+
+```{r, collapse=TRUE}
+# get dataframe for each cluster
+austin_cf1 <- merge(train, clusters_df1, by = 'row.names', all = TRUE)
+austin_cf1 <- na.omit(austin_cf1)
+austin_cf1 <- austin_cf1[-c(1, 7, 30)]
+dim(austin_cf1)
+# 113 rows
+
+austin_cf2 <- merge(train, clusters_df2, by = 'row.names', all = TRUE)
+austin_cf2 <- na.omit(austin_cf2)
+austin_cf2 <- austin_cf2[-c(1, 7, 30)]
+dim(austin_cf2)
+# 2328 rows
+
+austin_cf <- rbind(austin_cf1, austin_cf2)
+```
+
+```{r, collapse=TRUE}
+# call glm() for each cluster
+austin_cf1_lm <- lm(price_log ~., data = austin_cf1)
+summary(austin_cf1_lm)
+
+austin_cf2_lm <- lm(price_log ~., data = austin_cf2)
+summary(austin_cf2_lm)
+```
+
+*Cluster 1 doesn't do well though, cluster 2 dose well.*
+
+*Since clustering is unsupervised learning, we generally don't recommend this method for prediction.*
+
+*Here we applied euclidean distance, to assign data in test into two clusters and check prediction.*
+
+```{r, collapse=TRUE}
+austin_km2$centers
+```
+
+```{r, collapse=TRUE}
+# find cluster_id for austin_km2_test based on euclidean distance
+clusters <- function(x, centers) {
+  # compute squared euclidean distance from each sample to each cluster center
+  tmp <- sapply(seq_len(nrow(x)),
+                function(i) apply(centers, 1,
+                                  function(v) sum((x[i, ]-v)^2)))
+  max.col(-t(tmp))  # find index of min distance
+}
+
+# assign cluster_id to test dataset
+cluster_id_test <- as.data.frame(clusters(test[,2:5, 8:28], austin_km2[["centers"]]))
+austin_cf_test <- cbind(test, cluster_id_test)
+colnames(austin_cf_test)[29] <- "cluster_id"
+head(austin_cf_test)
+```
+
+```{r, collapse=TRUE, warning=FALSE}
+austin_cf_test1 <- austin_cf_test[austin_cf_test$cluster_id == 1,]
+austin_cf_test2 <- austin_cf_test[austin_cf_test$cluster_id == 2,]
+
+#prediction & MSE
+austin_cf1_pred <- predict(austin_cf1_lm, austin_cf_test1)
+austin_cf1_MSE <- mean((austin_cf_test1$price_log - austin_cf1_pred)^2)
+austin_cf1_MSE
+
+austin_cf2_pred <- predict(austin_cf2_lm, austin_cf_test2)
+austin_cf2_MSE <- mean((austin_cf_test2$price_log - austin_cf2_pred)^2)
+austin_cf2_MSE
+
+# R-square
+r2_cf1 <- calculateR2(austin_cf_test1$price_log, austin_cf1_pred)
+r2_cf2 <- calculateR2(austin_cf_test2$price_log, austin_cf2_pred)
+r2_cf1
+r2_cf2
+```
+
+*As we stated, cluster1 model doesn't fit well, while cluster 2 model does a good fit.*
+
+### (4). Lasso
+
+```{r, collapse=TRUE}
+set.seed(555)
+x <- model.matrix(price_log ~., austin_reg)[,-1]
+y <- austin_reg$price_log
+train <- sample(1:nrow(x), nrow(x)/2)
+test <- (-train)
+y.test <- y[test]
+```
+
+
+```{r, collapse=TRUE}
+lasso.mod <- glmnet(x[train, ], y[train], alpha = 1, lambda = NULL)
+plot(lasso.mod)
+
+# best tuning parameter
+cv.out <- cv.glmnet(x[train,], y[train], alpha = 1)
+bestlam <- cv.out$lambda.min
+bestlam
+
+#model selection
+austin_lasso <- glmnet(x,y,alpha = 1, lambda = NULL)
+austin_lasso_coef <- predict(austin_lasso, type = "coefficients", s = bestlam)[, ]
+austin_lasso_coef[austin_lasso_coef !=0]
+```
+
+*We have significant variables above with their coefficents.*
+
+```{r, collapse=TRUE}
+# MSE under the best tuning parameter
+austin_lasso_pred <- predict(austin_lasso, s = bestlam, newx = x[test,])
+lasso_MSE <- mean((austin_lasso_pred - y[test])^2)
+lasso_MSE
+
+# R-square
+lasso_r2 <- calculateR2(y[test], austin_lasso_pred)
+lasso_r2
+```
+
+### (5). Summary of 4 models
+
+```{r, collapse=TRUE}
+summary <- data.frame(MSE = c(
+  austin_stepwise_MSE, austin_rf_MSE, austin_cf1_MSE, austin_cf2_MSE, lasso_MSE),
+  Rsquared = c(summary(austin_stepwise)$r.squared, austin_rf_r2, r2_cf1, r2_cf2, lasso_r2))
+row.names(summary) <- c(
+  'Step-wise', 'Random Forest', 'Classification-Cluster1', 'Classification-Cluster2', 'Lasso')
+attr(summary, "row.names")
+summary
+```
+
+*Here we have summary of 4 models we applied for Airbnb price prediction. Based on R^2 (the larger, the better) and MSE (the smaller, the better), the result shows that random forest forecast is the best, followed by Lasso.*
+
+*Again, we don't suggest to use cluster method to do prediction since it's an unsupervised learning process. The clusters produced for each dataset could be different.*
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
