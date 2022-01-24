@@ -2,8 +2,8 @@
 title: |
   <center> STAT232 Final Project </center>
   <center> Analysis of Austin, Texas Airbnb </center>
-author: "Yincheng Zhao"
 output:
+  pdf_document: default
   html_document:
     df_print: paged
 always_allow_html: yes
